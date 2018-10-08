@@ -3,9 +3,9 @@ PASSWORD = '[pass]'
 CONNECT_RETRIES = 10
 CONNECTION_TIME = 6.0
 
-ERROR_LOG_FILENAME = 'error.log'
+CARDS_STORAGE_FILE = 'cards.txt'
 
-TEMPLATE_FOLDER = 'server/templates/'
+URL = 'http://door.gowombat.team/open/'
 
 try:
     from .local_conf import *

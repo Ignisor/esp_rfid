@@ -1,6 +1,8 @@
 from machine import Pin, SPI
 from os import uname
 
+from utils.card_data import CardData
+
 
 class MFRC522:
     OK = 0
@@ -13,7 +15,6 @@ class MFRC522:
     AUTHENT1B = 0x61
 
     def __init__(self, sck, mosi, miso, rst, cs):
-
         self.sck = Pin(sck, Pin.OUT)
         self.mosi = Pin(mosi, Pin.OUT)
         self.miso = Pin(miso)
@@ -23,16 +24,8 @@ class MFRC522:
         self.rst.value(0)
         self.cs.value(1)
 
-        board = uname()[0]
-
-        if board == 'WiPy' or board == 'LoPy' or board == 'FiPy':
-            self.spi = SPI(0)
-            self.spi.init(SPI.MASTER, baudrate=1000000, pins=(self.sck, self.mosi, self.miso))
-        elif board == 'esp8266':
-            self.spi = SPI(baudrate=100000, polarity=0, phase=0, sck=self.sck, mosi=self.mosi, miso=self.miso)
-            self.spi.init()
-        else:
-            raise RuntimeError("Unsupported platform")
+        self.spi = SPI(baudrate=100000, polarity=0, phase=0, sck=self.sck, mosi=self.mosi, miso=self.miso)
+        self.spi.init()
 
         self.rst.value(1)
         self.init()
@@ -84,7 +77,7 @@ class MFRC522:
         if cmd == 0x0C:
             self._sflags(0x0D, 0x80)
 
-        i = 2000
+        i = 200
         while True:
             n = self._rreg(0x04)
             i -= 1
@@ -139,7 +132,6 @@ class MFRC522:
         return [self._rreg(0x22), self._rreg(0x21)]
 
     def init(self):
-
         self.reset()
         self._wreg(0x2A, 0x8D)
         self._wreg(0x2B, 0x3E)
@@ -153,14 +145,12 @@ class MFRC522:
         self._wreg(0x01, 0x0F)
 
     def antenna_on(self, on=True):
-
         if on and ~(self._rreg(0x14) & 0x03):
             self._sflags(0x14, 0x03)
         else:
             self._cflags(0x14, 0x03)
 
     def request(self, mode):
-
         self._wreg(0x0D, 0x07)
         (stat, recv, bits) = self._tocard(0x0C, [mode])
 
@@ -170,7 +160,6 @@ class MFRC522:
         return stat, bits
 
     def anticoll(self):
-
         ser_chk = 0
         ser = [0x93, 0x20]
 
@@ -189,7 +178,6 @@ class MFRC522:
         return stat, recv
 
     def select_tag(self, ser):
-
         buf = [0x93, 0x70] + ser[:5]
         buf += self._crc(buf)
         (stat, recv, bits) = self._tocard(0x0C, buf)
@@ -202,14 +190,12 @@ class MFRC522:
         self._cflags(0x08, 0x08)
 
     def read(self, addr):
-
         data = [0x30, addr]
         data += self._crc(data)
         (stat, recv, _) = self._tocard(0x0C, data)
         return recv if stat == self.OK else None
 
     def write(self, addr, data):
-
         buf = [0xA0, addr]
         buf += self._crc(buf)
         (stat, recv, bits) = self._tocard(0x0C, buf)
@@ -226,3 +212,76 @@ class MFRC522:
                 stat = self.ERR
 
         return stat
+
+    def read_data(self, addresses=None):
+        """
+        Wait for card and read data from 'addresses'
+        :param addresses: list of addresses to read from (if you specify empty list, card data will contain only UID)
+        :return: CardData instance with card data
+        """
+        print("Place card before reader to read from addresses {}".format(addresses))
+        card = None
+        while True:
+            (stat, tag_type) = self.request(self.REQIDL)
+
+            if stat != self.OK:
+                continue
+
+            (stat, raw_uid) = self.anticoll()
+
+            if stat == self.OK:
+                card = CardData(raw_uid, tag_type)
+
+                if self.select_tag(card.uid) == self.OK:
+                    key = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+
+                    addresses = addresses if addresses is not None else range(64)
+                    for i in addresses:
+                        if self.auth(self.AUTHENT1A, i, key, card.uid) == self.OK:
+                            data = bytes(self.read(i))
+                            card.set_data(i, data)
+                            self.stop_crypto1()
+                        else:
+                            print("Authentication error for address {}".format(i))
+                else:
+                    print("Failed to select tag")
+                    return None
+
+            return card
+
+    def write_data(self, data):
+        """
+        Writes specified "data" to card
+        :param data: dict with key - address, value - 16 bytes of data in binary string (hex)
+        :return: CardData instance
+        """
+        print("Place card before reader to write to addresses {}".format(data.keys()))
+        while True:
+
+            (stat, tag_type) = self.request(self.REQIDL)
+
+            if stat != self.OK:
+                continue
+
+            (stat, raw_uid) = self.anticoll()
+
+            if stat == self.OK:
+                print("Card detected")
+                card = CardData(raw_uid, tag_type)
+
+                if self.select_tag(card.uid) == self.OK:
+                    key = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+
+                    for addr, value in data.items():
+                        if self.auth(self.AUTHENT1A, addr, key, card.uid) == self.OK:
+                            card.set_data(addr, value)
+                            stat = self.write(addr, value)
+                            self.stop_crypto1()
+                            if stat == self.OK:
+                                print("Data written to card for address {}".format(addr))
+                            else:
+                                print("Failed to write data to card for address {}".format(addr))
+                        else:
+                            print("Authentication error for address {}".format(addr))
+                else:
+                    print("Failed to select tag")
